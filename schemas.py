@@ -19,3 +19,19 @@ class TranscribeResponse(BaseModel):
     duration: float
     segments: list[dict]
     words: list[dict] = Field(default_factory=list)
+
+
+class HealthResponse(BaseModel):
+    status: str
+    ready: bool
+    model_size: str
+    device: str
+    compute_type: str
+    default_language: str
+    beam_size: int
+    vad_filter: bool
+    import_ok: bool
+    import_error: str | None = None
+    model_loaded: bool = False
+    model_load_error: str | None = None
+    last_transcribe_error: str | None = None

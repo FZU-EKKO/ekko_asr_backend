@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import base64
 import io
+import logging
 import os
+import traceback
 import wave
 from functools import lru_cache
 from tempfile import mkstemp
 from typing import Any
-
-from faster_whisper import WhisperModel
 
 from config import (
     ASR_BEAM_SIZE,
@@ -20,6 +20,18 @@ from config import (
 )
 
 
+logger = logging.getLogger("ekko_asr_service")
+
+_IMPORT_ERROR: Exception | None = None
+_IMPORT_TRACEBACK = ""
+try:
+    from faster_whisper import WhisperModel
+except Exception as exc:  # pragma: no cover - import-time environment issue
+    WhisperModel = None  # type: ignore[assignment]
+    _IMPORT_ERROR = exc
+    _IMPORT_TRACEBACK = traceback.format_exc()
+
+
 class AsrService:
     def transcribe(
         self,
@@ -29,36 +41,25 @@ class AsrService:
         language: str,
         prompt_text: str,
     ) -> dict[str, Any]:
-        audio_bytes = self._decode_audio(audio_base64)
         normalized_format = (audio_format or "wav").strip().lower()
         if normalized_format != "wav":
             raise ValueError(f"Unsupported audio_format: {audio_format}")
-        return self._transcribe_wav_bytes(audio_bytes=audio_bytes, language=language, prompt_text=prompt_text)
 
-    def transcribe_pcm_bytes(
-        self,
-        *,
-        pcm_bytes: bytes,
-        sample_rate: int,
-        channels: int,
-        sample_width: int,
-        language: str,
-        prompt_text: str,
-    ) -> dict[str, Any]:
-        wav_bytes = self._build_wav_bytes(
-            pcm_bytes=pcm_bytes,
-            sample_rate=sample_rate,
-            channels=channels,
-            sample_width=sample_width,
+        audio_bytes = self._decode_wav_base64(audio_base64)
+        logger.info(
+            "transcribe request bytes=%s language=%s prompt_chars=%s",
+            len(audio_bytes),
+            language or ASR_DEFAULT_LANGUAGE,
+            len(prompt_text or ""),
         )
-        return self._transcribe_wav_bytes(audio_bytes=wav_bytes, language=language, prompt_text=prompt_text)
-
-    @property
-    def _model(self) -> WhisperModel:
-        return get_whisper_model()
+        return self._transcribe_wav_bytes(
+            audio_bytes=audio_bytes,
+            language=language or ASR_DEFAULT_LANGUAGE,
+            prompt_text=prompt_text,
+        )
 
     @staticmethod
-    def _decode_audio(audio_base64: str) -> bytes:
+    def _decode_wav_base64(audio_base64: str) -> bytes:
         try:
             audio_bytes = base64.b64decode(audio_base64)
         except Exception as exc:
@@ -69,11 +70,23 @@ class AsrService:
 
         try:
             with wave.open(io.BytesIO(audio_bytes), "rb") as wav_file:
-                if wav_file.getnframes() <= 0:
-                    raise ValueError("wav contains no frames")
+                channels = wav_file.getnchannels()
+                sample_width = wav_file.getsampwidth()
+                sample_rate = wav_file.getframerate()
+                frames = wav_file.getnframes()
         except wave.Error as exc:
             raise ValueError("audio payload is not a valid wav file") from exc
 
+        if frames <= 0:
+            raise ValueError("wav contains no frames")
+
+        logger.info(
+            "wav meta channels=%s sample_width=%s sample_rate=%s frames=%s",
+            channels,
+            sample_width,
+            sample_rate,
+            frames,
+        )
         return audio_bytes
 
     def _transcribe_wav_bytes(self, *, audio_bytes: bytes, language: str, prompt_text: str) -> dict[str, Any]:
@@ -84,85 +97,155 @@ class AsrService:
             with open(temp_path, "wb") as temp_file:
                 temp_file.write(audio_bytes)
 
-            segments, info = self._model.transcribe(
+            logger.info("model transcribe start path=%s", temp_path)
+            segments_iter, info = self._model.transcribe(
                 temp_path,
-                language=(language or ASR_DEFAULT_LANGUAGE).strip() or None,
-                initial_prompt=prompt_text.strip() or None,
+                language=self._normalize_language(language),
                 beam_size=ASR_BEAM_SIZE,
                 vad_filter=ASR_VAD_FILTER,
                 word_timestamps=True,
+                initial_prompt=(prompt_text or "").strip() or None,
             )
-            segment_list = [
-                {
-                    "id": item.id,
-                    "start": round(item.start, 3),
-                    "end": round(item.end, 3),
-                    "text": item.text.strip(),
-                    "words": [
-                        {
-                            "start": round(float(word.start), 3),
-                            "end": round(float(word.end), 3),
-                            "word": (word.word or "").strip(),
-                            "probability": round(float(word.probability), 4),
-                        }
-                        for word in (item.words or [])
-                        if (word.word or "").strip()
-                    ],
-                }
-                for item in segments
-                if item.text.strip()
-            ]
+            raw_result = self._normalize_result(list(segments_iter), info, language)
         finally:
             try:
                 os.unlink(temp_path)
             except FileNotFoundError:
                 pass
-        word_list = self._extract_words(segment_list)
-        text = " ".join(item["text"] for item in segment_list).strip()
-        if not text:
-            text = "[unrecognized speech]"
 
+        return raw_result
+
+    @property
+    def _model(self):
+        return get_whisper_model()
+
+    @staticmethod
+    def _normalize_language(language: str) -> str | None:
+        normalized = (language or ASR_DEFAULT_LANGUAGE).strip().lower()
+        if not normalized:
+            return None
+        mapping = {
+            "zh": "zh",
+            "zh-cn": "zh",
+            "cn": "zh",
+            "chinese": "zh",
+            "en": "en",
+            "english": "en",
+            "ja": "ja",
+            "jp": "ja",
+            "japanese": "ja",
+            "auto": "",
+            "": "",
+        }
+        resolved = mapping.get(normalized, normalized)
+        return resolved or None
+
+    @staticmethod
+    def _normalize_result(raw_segments: list[Any], info: Any, requested_language: str) -> dict[str, Any]:
+        segments = AsrService._build_segments(raw_segments)
+        text = "".join(str(getattr(raw_segment, "text", "") or "") for raw_segment in raw_segments).strip()
+        text = text or "[unrecognized speech]"
+        words = [word for segment in segments for word in segment.get("words", [])]
+        duration = round(max((float(segment.get("end", 0.0) or 0.0) for segment in segments), default=0.0), 3)
+        detected_language = str(
+            getattr(info, "language", "") or requested_language or ASR_DEFAULT_LANGUAGE
+        )
+
+        logger.info(
+            "model transcribe done segments=%s text_chars=%s duration=%s language=%s",
+            len(segments),
+            len(text),
+            duration,
+            detected_language,
+        )
         return {
             "text": text,
-            "language": info.language or language or ASR_DEFAULT_LANGUAGE,
-            "duration": round(info.duration, 3),
-            "segments": segment_list,
-            "words": word_list,
+            "language": detected_language,
+            "duration": duration,
+            "segments": segments,
+            "words": words,
         }
 
     @staticmethod
-    def _build_wav_bytes(*, pcm_bytes: bytes, sample_rate: int, channels: int, sample_width: int) -> bytes:
-        stream = io.BytesIO()
-        with wave.open(stream, "wb") as wav_file:
-            wav_file.setnchannels(channels)
-            wav_file.setsampwidth(sample_width)
-            wav_file.setframerate(sample_rate)
-            wav_file.writeframes(pcm_bytes)
-        return stream.getvalue()
-
-    @staticmethod
-    def _extract_words(segment_list: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        words: list[dict[str, Any]] = []
-        for segment in segment_list:
-            raw_words = segment.get("words") or []
-            for item in raw_words:
-                token = str(item.get("word", "") or "").strip()
-                if not token:
+    def _build_segments(raw_segments: list[Any]) -> list[dict[str, Any]]:
+        segments: list[dict[str, Any]] = []
+        for index, raw_segment in enumerate(raw_segments):
+            segment_words: list[dict[str, Any]] = []
+            for raw_word in getattr(raw_segment, "words", None) or []:
+                word_text = str(getattr(raw_word, "word", "") or "").strip()
+                if not word_text:
                     continue
-                words.append(
+                probability = getattr(raw_word, "probability", None)
+                segment_words.append(
                     {
-                        "start": round(float(item.get("start", 0.0)), 3),
-                        "end": round(float(item.get("end", 0.0)), 3),
-                        "word": token,
-                        "probability": round(float(item.get("probability", 0.0)), 4),
+                        "start": round(float(getattr(raw_word, "start", 0.0) or 0.0), 3),
+                        "end": round(float(getattr(raw_word, "end", 0.0) or 0.0), 3),
+                        "word": word_text,
+                        "probability": round(float(probability), 4) if isinstance(probability, (int, float)) else 0.0,
                     }
                 )
-        return words
+
+            segments.append(
+                {
+                    "id": index,
+                    "start": round(float(getattr(raw_segment, "start", 0.0) or 0.0), 3),
+                    "end": round(float(getattr(raw_segment, "end", 0.0) or 0.0), 3),
+                    "text": str(getattr(raw_segment, "text", "") or "").strip(),
+                    "words": segment_words,
+                }
+            )
+        if segments:
+            return segments
+        return [
+            {
+                "id": 0,
+                "start": 0.0,
+                "end": 0.0,
+                "text": "[unrecognized speech]",
+                "words": [],
+            }
+        ]
+
+
+def get_runtime_status() -> dict[str, Any]:
+    return {
+        "model_size": ASR_MODEL_SIZE,
+        "device": ASR_DEVICE,
+        "compute_type": ASR_COMPUTE_TYPE,
+        "default_language": ASR_DEFAULT_LANGUAGE,
+        "beam_size": ASR_BEAM_SIZE,
+        "vad_filter": ASR_VAD_FILTER,
+        "import_ok": _IMPORT_ERROR is None,
+        "import_error": None if _IMPORT_ERROR is None else repr(_IMPORT_ERROR),
+    }
+
+
+def warmup_model() -> tuple[bool, str | None]:
+    try:
+        _ = get_whisper_model()
+        return True, None
+    except Exception as exc:
+        logger.exception("warmup model failed")
+        return False, repr(exc)
+
+
+def get_import_traceback() -> str:
+    return _IMPORT_TRACEBACK
+
 
 @lru_cache(maxsize=1)
-def get_whisper_model() -> WhisperModel:
+def get_whisper_model():
+    if _IMPORT_ERROR is not None:
+        raise RuntimeError(f"faster_whisper import failed: {_IMPORT_ERROR!r}")
+
+    logger.info(
+        "load faster_whisper model model=%s device=%s compute_type=%s",
+        ASR_MODEL_SIZE,
+        ASR_DEVICE,
+        ASR_COMPUTE_TYPE,
+    )
     return WhisperModel(
         ASR_MODEL_SIZE,
         device=ASR_DEVICE,
         compute_type=ASR_COMPUTE_TYPE,
-    )
+    )  # type: ignore[misc]
