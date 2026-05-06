@@ -7,7 +7,7 @@ from fastapi.responses import JSONResponse
 
 from config import ASR_SERVICE_TOKEN
 from schemas import HealthResponse, TranscribeRequest, TranscribeResponse
-from service import AsrService, get_import_traceback, get_runtime_status, warmup_model
+from service import AsrService, get_runtime_status, warmup_model
 
 
 logging.basicConfig(
@@ -39,9 +39,6 @@ def startup_warmup() -> None:
         logger.info("startup warmup success")
     else:
         logger.error("startup warmup failed detail=%s", error)
-        import_traceback = get_import_traceback()
-        if import_traceback:
-            logger.error("startup import traceback\n%s", import_traceback)
 
 
 @app.exception_handler(Exception)
@@ -56,18 +53,16 @@ async def unhandled_exception_handler(_request: Request, exc: Exception):
 @app.get("/health", response_model=HealthResponse)
 def health_check() -> HealthResponse:
     runtime = get_runtime_status()
-    ready = bool(runtime["import_ok"] and app.state.model_loaded and not app.state.model_load_error)
+    ready = bool(app.state.model_loaded and not app.state.model_load_error)
     return HealthResponse(
         status="ok" if ready else "degraded",
         ready=ready,
-        model_size=runtime["model_size"],
+        model_path=runtime["model_path"],
         device=runtime["device"],
         compute_type=runtime["compute_type"],
         default_language=runtime["default_language"],
         beam_size=runtime["beam_size"],
         vad_filter=runtime["vad_filter"],
-        import_ok=runtime["import_ok"],
-        import_error=runtime["import_error"],
         model_loaded=bool(app.state.model_loaded),
         model_load_error=app.state.model_load_error,
         last_transcribe_error=app.state.last_transcribe_error,

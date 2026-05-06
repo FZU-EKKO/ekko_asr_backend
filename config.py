@@ -30,7 +30,7 @@ def get_bool_env(name: str, default: bool) -> bool:
 
 
 ASR_SERVICE_TOKEN = get_env("EKKO_ASR_SERVICE_TOKEN", "")
-ASR_MODEL_SIZE = get_env("EKKO_ASR_MODEL_SIZE", "large-v3")
+ASR_MODEL_PATH = get_env("EKKO_ASR_MODEL_PATH", "large-v3")
 ASR_DEVICE = get_env("EKKO_ASR_DEVICE", "auto")
 ASR_COMPUTE_TYPE = get_env("EKKO_ASR_COMPUTE_TYPE", "auto")
 ASR_DEFAULT_LANGUAGE = get_env("EKKO_ASR_DEFAULT_LANGUAGE", "zh")

@@ -25,7 +25,7 @@ Environment:
 
 ```env
 EKKO_ASR_SERVICE_TOKEN=
-EKKO_ASR_MODEL_SIZE=large-v3
+EKKO_ASR_MODEL_PATH=/data/models/faster-whisper/large-v3
 EKKO_ASR_DEVICE=auto
 EKKO_ASR_COMPUTE_TYPE=auto
 EKKO_ASR_DEFAULT_LANGUAGE=zh

@@ -4,7 +4,6 @@ import base64
 import io
 import logging
 import os
-import traceback
 import wave
 from functools import lru_cache
 from tempfile import mkstemp
@@ -15,21 +14,13 @@ from config import (
     ASR_COMPUTE_TYPE,
     ASR_DEFAULT_LANGUAGE,
     ASR_DEVICE,
-    ASR_MODEL_SIZE,
+    ASR_MODEL_PATH,
     ASR_VAD_FILTER,
 )
+from faster_whisper import WhisperModel
 
 
 logger = logging.getLogger("ekko_asr_service")
-
-_IMPORT_ERROR: Exception | None = None
-_IMPORT_TRACEBACK = ""
-try:
-    from faster_whisper import WhisperModel
-except Exception as exc:  # pragma: no cover - import-time environment issue
-    WhisperModel = None  # type: ignore[assignment]
-    _IMPORT_ERROR = exc
-    _IMPORT_TRACEBACK = traceback.format_exc()
 
 
 class AsrService:
@@ -209,14 +200,12 @@ class AsrService:
 
 def get_runtime_status() -> dict[str, Any]:
     return {
-        "model_size": ASR_MODEL_SIZE,
+        "model_path": ASR_MODEL_PATH,
         "device": ASR_DEVICE,
         "compute_type": ASR_COMPUTE_TYPE,
         "default_language": ASR_DEFAULT_LANGUAGE,
         "beam_size": ASR_BEAM_SIZE,
         "vad_filter": ASR_VAD_FILTER,
-        "import_ok": _IMPORT_ERROR is None,
-        "import_error": None if _IMPORT_ERROR is None else repr(_IMPORT_ERROR),
     }
 
 
@@ -227,25 +216,16 @@ def warmup_model() -> tuple[bool, str | None]:
     except Exception as exc:
         logger.exception("warmup model failed")
         return False, repr(exc)
-
-
-def get_import_traceback() -> str:
-    return _IMPORT_TRACEBACK
-
-
 @lru_cache(maxsize=1)
 def get_whisper_model():
-    if _IMPORT_ERROR is not None:
-        raise RuntimeError(f"faster_whisper import failed: {_IMPORT_ERROR!r}")
-
     logger.info(
         "load faster_whisper model model=%s device=%s compute_type=%s",
-        ASR_MODEL_SIZE,
+        ASR_MODEL_PATH,
         ASR_DEVICE,
         ASR_COMPUTE_TYPE,
     )
     return WhisperModel(
-        ASR_MODEL_SIZE,
+        ASR_MODEL_PATH,
         device=ASR_DEVICE,
         compute_type=ASR_COMPUTE_TYPE,
     )  # type: ignore[misc]

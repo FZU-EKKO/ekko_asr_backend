@@ -1,0 +1,12 @@
+# Environment and secrets
+.env
+.env.*
+!.env.example
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Local ASR model artifacts
+models/*
+!models/.gitkeep
