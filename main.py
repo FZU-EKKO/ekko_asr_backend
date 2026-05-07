@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import logging
+from dataclasses import dataclass
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
 from fastapi.responses import JSONResponse
@@ -20,6 +22,43 @@ app = FastAPI(title="ekko_asr_service")
 app.state.model_loaded = False
 app.state.model_load_error = None
 app.state.last_transcribe_error = None
+app.state.transcribe_queue = None
+app.state.transcribe_worker = None
+app.state.queue_processing = False
+
+
+@dataclass
+class QueueItem:
+    req: TranscribeRequest
+    future: asyncio.Future[dict]
+
+
+async def transcribe_worker_loop() -> None:
+    queue: asyncio.Queue[QueueItem | None] = app.state.transcribe_queue
+    while True:
+        item = await queue.get()
+        if item is None:
+            queue.task_done()
+            break
+
+        app.state.queue_processing = True
+        try:
+            result = await asyncio.to_thread(
+                AsrService().transcribe,
+                audio_base64=item.req.audio_base64,
+                audio_format=item.req.audio_format,
+                language=item.req.language,
+                prompt_text=item.req.prompt_text,
+            )
+        except Exception as exc:
+            if not item.future.done():
+                item.future.set_exception(exc)
+        else:
+            if not item.future.done():
+                item.future.set_result(result)
+        finally:
+            app.state.queue_processing = False
+            queue.task_done()
 
 
 def verify_token(authorization: str | None = Header(default=None)) -> None:
@@ -31,14 +70,26 @@ def verify_token(authorization: str | None = Header(default=None)) -> None:
 
 
 @app.on_event("startup")
-def startup_warmup() -> None:
+async def startup_warmup() -> None:
     ready, error = warmup_model()
     app.state.model_loaded = ready
     app.state.model_load_error = error
+    app.state.transcribe_queue = asyncio.Queue()
+    app.state.transcribe_worker = asyncio.create_task(transcribe_worker_loop())
     if ready:
         logger.info("startup warmup success")
     else:
         logger.error("startup warmup failed detail=%s", error)
+
+
+@app.on_event("shutdown")
+async def shutdown_worker() -> None:
+    queue: asyncio.Queue[QueueItem | None] | None = app.state.transcribe_queue
+    worker: asyncio.Task | None = app.state.transcribe_worker
+    if queue is not None:
+        await queue.put(None)
+    if worker is not None:
+        await worker
 
 
 @app.exception_handler(Exception)
@@ -66,11 +117,13 @@ def health_check() -> HealthResponse:
         model_loaded=bool(app.state.model_loaded),
         model_load_error=app.state.model_load_error,
         last_transcribe_error=app.state.last_transcribe_error,
+        queue_size=0 if app.state.transcribe_queue is None else app.state.transcribe_queue.qsize(),
+        queue_processing=bool(app.state.queue_processing),
     )
 
 
 @app.post("/asr/transcribe", response_model=TranscribeResponse, dependencies=[Depends(verify_token)])
-def transcribe(req: TranscribeRequest) -> TranscribeResponse:
+async def transcribe(req: TranscribeRequest) -> TranscribeResponse:
     logger.info(
         "http transcribe request format=%s language=%s audio_base64_chars=%s",
         req.audio_format,
@@ -78,14 +131,15 @@ def transcribe(req: TranscribeRequest) -> TranscribeResponse:
         len(req.audio_base64 or ""),
     )
     app.state.last_transcribe_error = None
+    queue: asyncio.Queue[QueueItem | None] | None = app.state.transcribe_queue
+    if queue is None:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="ASR queue is not ready")
 
     try:
-        result = AsrService().transcribe(
-            audio_base64=req.audio_base64,
-            audio_format=req.audio_format,
-            language=req.language,
-            prompt_text=req.prompt_text,
-        )
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future[dict] = loop.create_future()
+        await queue.put(QueueItem(req=req, future=future))
+        result = await future
     except ValueError as exc:
         app.state.last_transcribe_error = str(exc)
         logger.warning("http transcribe bad_request detail=%s", exc)

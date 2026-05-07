@@ -35,3 +35,5 @@ class HealthResponse(BaseModel):
     model_loaded: bool = False
     model_load_error: str | None = None
     last_transcribe_error: str | None = None
+    queue_size: int = 0
+    queue_processing: bool = False
