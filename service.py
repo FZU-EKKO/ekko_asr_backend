@@ -22,8 +22,13 @@ from faster_whisper import WhisperModel
 
 logger = logging.getLogger("ekko_asr_service")
 
-# Keep post-processing disabled until the custom phrase list is verified.
-ASR_REPLACE_MAP: dict[str, str] = {}
+# Replace rare but phonetically similar misrecognitions here.
+ASR_REPLACE_MAP: dict[str, str] = {
+    "落毙": "RUSH B",
+    "络币": "RUSH B",
+    "络A": "RUSH A",
+    "耶": "烟",
+}
 
 # Keep hotwords intentionally small and clean. Too many bias terms, or malformed
 # terms, will pull decoding toward words that were never spoken.
@@ -275,6 +280,7 @@ def get_runtime_status() -> dict[str, Any]:
         "default_language": ASR_DEFAULT_LANGUAGE,
         "beam_size": ASR_BEAM_SIZE,
         "vad_filter": ASR_VAD_FILTER,
+        "replace_map_entries": len(ASR_REPLACE_MAP),
     }
 
 

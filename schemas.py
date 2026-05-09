@@ -32,6 +32,7 @@ class HealthResponse(BaseModel):
     default_language: str
     beam_size: int
     vad_filter: bool
+    replace_map_entries: int = 0
     model_loaded: bool = False
     model_load_error: str | None = None
     last_transcribe_error: str | None = None
