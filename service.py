@@ -49,7 +49,7 @@ ASR_HOTWORDS: tuple[str, ...] = (
 )
 
 # Use only a short, generic prompt. Long scripted prompts make the decoder guess.
-ASR_INITIAL_PROMPT = "这是一段简体中文的对话，内容与游戏相关。"
+ASR_INITIAL_PROMPT = "这是一段简体中文的对话(包含English)，内容与fps游戏相关。"
 
 
 class AsrService:
