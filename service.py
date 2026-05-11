@@ -49,7 +49,7 @@ ASR_HOTWORDS: tuple[str, ...] = (
 )
 
 # Use only a short, generic prompt. Long scripted prompts make the decoder guess.
-ASR_INITIAL_PROMPT = "这是中文游戏语音交流，可能包含地图点位、武器名称和战术口令。"
+ASR_INITIAL_PROMPT = "这是一段简体中文的对话，内容与游戏相关。"
 
 
 class AsrService:
@@ -127,7 +127,7 @@ class AsrService:
                     beam_size=ASR_BEAM_SIZE,
                     vad_filter=ASR_VAD_FILTER,
                     word_timestamps=True,
-                    # initial_prompt=self._build_initial_prompt(),
+                    initial_prompt=self._build_initial_prompt(),
                     # hotwords=self._build_hotwords(),
                 )
                 raw_result = self._normalize_result(list(segments_iter), info, language)
