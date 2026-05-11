@@ -4,7 +4,6 @@ Minimal one-shot ASR service for `ekko` voice messages.
 
 Interfaces:
 
-- `GET /health`
 - `POST /asr/transcribe`
 
 Run:

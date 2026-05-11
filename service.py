@@ -7,7 +7,6 @@ import os
 import wave
 from functools import lru_cache
 from tempfile import mkstemp
-from typing import Any
 
 from config import (
     ASR_BEAM_SIZE,
@@ -270,18 +269,6 @@ class AsrService:
                 continue
             normalized = normalized.replace(source_text, str(target or ""))
         return normalized
-
-
-def get_runtime_status() -> dict[str, Any]:
-    return {
-        "model_path": ASR_MODEL_PATH,
-        "device": ASR_DEVICE,
-        "compute_type": ASR_COMPUTE_TYPE,
-        "default_language": ASR_DEFAULT_LANGUAGE,
-        "beam_size": ASR_BEAM_SIZE,
-        "vad_filter": ASR_VAD_FILTER,
-        "replace_map_entries": len(ASR_REPLACE_MAP),
-    }
 
 
 def warmup_model() -> tuple[bool, str | None]:

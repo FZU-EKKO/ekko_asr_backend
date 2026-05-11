@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from pydantic import BaseModel, Field,ConfigDict
+from pydantic import BaseModel, Field
 
 
 class TranscribeRequest(BaseModel):
@@ -19,22 +19,3 @@ class TranscribeResponse(BaseModel):
     duration: float
     segments: list[dict]
     words: list[dict] = Field(default_factory=list)
-
-
-class HealthResponse(BaseModel):
-    model_config = ConfigDict(protected_namespaces=())
-
-    status: str
-    ready: bool
-    model_path: str
-    device: str
-    compute_type: str
-    default_language: str
-    beam_size: int
-    vad_filter: bool
-    replace_map_entries: int = 0
-    model_loaded: bool = False
-    model_load_error: str | None = None
-    last_transcribe_error: str | None = None
-    queue_size: int = 0
-    queue_processing: bool = False
