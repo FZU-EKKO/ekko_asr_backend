@@ -127,8 +127,8 @@ class AsrService:
                     beam_size=ASR_BEAM_SIZE,
                     vad_filter=ASR_VAD_FILTER,
                     word_timestamps=True,
-                    initial_prompt=self._build_initial_prompt(),
-                    hotwords=self._build_hotwords(),
+                    # initial_prompt=self._build_initial_prompt(),
+                    # hotwords=self._build_hotwords(),
                 )
                 raw_result = self._normalize_result(list(segments_iter), info, language)
             except Exception as exc:
