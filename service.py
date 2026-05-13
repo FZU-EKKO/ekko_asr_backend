@@ -1,12 +1,8 @@
 from __future__ import annotations
 
-import base64
-import io
 import logging
-import os
-import wave
 from functools import lru_cache
-from tempfile import mkstemp
+from typing import Any
 
 from config import (
     ASR_BEAM_SIZE,
@@ -23,14 +19,15 @@ logger = logging.getLogger("ekko_asr_service")
 
 # Replace rare but phonetically similar misrecognitions here.
 ASR_REPLACE_MAP: dict[str, str] = {
-    "落毙": "RUSH B",
-    "络币": "RUSH B",
-    "络A": "RUSH A",
-    "耶": "烟",
+    "拉屎币": "RUSH B",
+    "绕后币": "RUSH B",
+    "肉丝币": "RUSH B",
+    "肉丝A": "RUSH A",
+    "肉丝a": "RUSH A",
 }
 
-# Keep hotwords intentionally small and clean. Too many bias terms, or malformed
-# terms, will pull decoding toward words that were never spoken.
+# Keep hotwords intentionally small and clean. Too many bias terms will pull
+# decoding toward words that were never spoken.
 ASR_HOTWORDS: tuple[str, ...] = (
     "AK",
     "M4",
@@ -41,107 +38,55 @@ ASR_HOTWORDS: tuple[str, ...] = (
     "B点",
     "中门",
     "烟",
-    "闪",
     "雷",
     "C4",
     "rush B",
 )
 
-# Use only a short, generic prompt. Long scripted prompts make the decoder guess.
-ASR_INITIAL_PROMPT = "这是一段简体中文的对话(包含English)，内容与fps游戏相关。"
+ASR_INITIAL_PROMPT = "这是一段简体中文对话，可能夹杂英文，内容与 FPS 游戏相关。"
 
 
 class AsrService:
-    def transcribe(
+    def transcribe_file(
         self,
         *,
-        audio_base64: str,
+        audio_path: str,
         audio_format: str,
         language: str,
-        prompt_text: str,
     ) -> dict[str, Any]:
         normalized_format = (audio_format or "wav").strip().lower()
         if normalized_format != "wav":
             raise ValueError(f"Unsupported audio_format: {audio_format}")
 
-        audio_bytes = self._decode_wav_base64(audio_base64)
         logger.info(
-            "transcribe request bytes=%s language=%s request_prompt_chars=%s configured_prompt_chars=%s hotwords=%s",
-            len(audio_bytes),
+            "transcribe file request path=%s language=%s configured_prompt_chars=%s hotwords=%s",
+            audio_path,
             language or ASR_DEFAULT_LANGUAGE,
-            len(prompt_text or ""),
             len(ASR_INITIAL_PROMPT),
             len(ASR_HOTWORDS),
         )
-        return self._transcribe_wav_bytes(
-            audio_bytes=audio_bytes,
+        return self._transcribe_wav_path(
+            audio_path=audio_path,
             language=language or ASR_DEFAULT_LANGUAGE,
-            prompt_text=prompt_text,
         )
 
-    @staticmethod
-    def _decode_wav_base64(audio_base64: str) -> bytes:
+    def _transcribe_wav_path(self, *, audio_path: str, language: str) -> dict[str, Any]:
+        logger.info("model transcribe start path=%s", audio_path)
         try:
-            audio_bytes = base64.b64decode(audio_base64)
+            segments_iter, info = self._model.transcribe(
+                audio_path,
+                language=self._normalize_language(language),
+                beam_size=ASR_BEAM_SIZE,
+                vad_filter=ASR_VAD_FILTER,
+                word_timestamps=True,
+                initial_prompt=self._build_initial_prompt(),
+            )
+            return self._normalize_result(list(segments_iter), info, language)
         except Exception as exc:
-            raise ValueError("audio_base64 is not valid base64") from exc
-
-        if not audio_bytes:
-            raise ValueError("audio_base64 is empty")
-
-        try:
-            with wave.open(io.BytesIO(audio_bytes), "rb") as wav_file:
-                channels = wav_file.getnchannels()
-                sample_width = wav_file.getsampwidth()
-                sample_rate = wav_file.getframerate()
-                frames = wav_file.getnframes()
-        except wave.Error as exc:
-            raise ValueError("audio payload is not a valid wav file") from exc
-
-        if frames <= 0:
-            raise ValueError("wav contains no frames")
-
-        logger.info(
-            "wav meta channels=%s sample_width=%s sample_rate=%s frames=%s",
-            channels,
-            sample_width,
-            sample_rate,
-            frames,
-        )
-        return audio_bytes
-
-    def _transcribe_wav_bytes(self, *, audio_bytes: bytes, language: str, prompt_text: str) -> dict[str, Any]:
-        fd, temp_path = mkstemp(suffix=".wav")
-        os.close(fd)
-
-        try:
-            with open(temp_path, "wb") as temp_file:
-                temp_file.write(audio_bytes)
-
-            logger.info("model transcribe start path=%s", temp_path)
-            try:
-                segments_iter, info = self._model.transcribe(
-                    temp_path,
-                    language=self._normalize_language(language),
-                    beam_size=ASR_BEAM_SIZE,
-                    vad_filter=ASR_VAD_FILTER,
-                    word_timestamps=True,
-                    initial_prompt=self._build_initial_prompt(),
-                    # hotwords=self._build_hotwords(),
-                )
-                raw_result = self._normalize_result(list(segments_iter), info, language)
-            except Exception as exc:
-                if "maximum decoding length must be > 0" in str(exc):
-                    logger.warning("model transcribe skipped empty_decoding_window path=%s detail=%s", temp_path, exc)
-                    return self._empty_result(language)
-                raise
-        finally:
-            try:
-                os.unlink(temp_path)
-            except FileNotFoundError:
-                pass
-
-        return raw_result
+            if "maximum decoding length must be > 0" in str(exc):
+                logger.warning("model transcribe skipped empty_decoding_window path=%s detail=%s", audio_path, exc)
+                return self._empty_result(language)
+            raise
 
     @staticmethod
     def _empty_result(requested_language: str) -> dict[str, Any]:
@@ -180,13 +125,6 @@ class AsrService:
         return resolved or None
 
     @staticmethod
-    def _build_hotwords() -> str | None:
-        hotwords = [word.strip() for word in ASR_HOTWORDS if word and word.strip()]
-        if not hotwords:
-            return None
-        return ", ".join(dict.fromkeys(hotwords))
-
-    @staticmethod
     def _build_initial_prompt() -> str | None:
         prompt = ASR_INITIAL_PROMPT.strip()
         return prompt or None
@@ -198,9 +136,7 @@ class AsrService:
         text = AsrService._apply_replace_map(text) or "[unrecognized speech]"
         words = [word for segment in segments for word in segment.get("words", [])]
         duration = round(max((float(segment.get("end", 0.0) or 0.0) for segment in segments), default=0.0), 3)
-        detected_language = str(
-            getattr(info, "language", "") or requested_language or ASR_DEFAULT_LANGUAGE
-        )
+        detected_language = str(getattr(info, "language", "") or requested_language or ASR_DEFAULT_LANGUAGE)
 
         logger.info(
             "model transcribe done segments=%s text_chars=%s duration=%s language=%s",
@@ -245,6 +181,7 @@ class AsrService:
                     "words": segment_words,
                 }
             )
+
         if segments:
             return segments
         return [
