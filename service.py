@@ -43,7 +43,7 @@ ASR_HOTWORDS: tuple[str, ...] = (
     "rush B",
 )
 
-ASR_INITIAL_PROMPT = "这是一段简体中文对话，可能夹杂英文，内容与 FPS 游戏相关。"
+ASR_INITIAL_PROMPT = "这是一段简体中文对话，内容与 FPS 游戏相关。"
 
 
 class AsrService:
