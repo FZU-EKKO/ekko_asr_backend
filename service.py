@@ -26,6 +26,7 @@ ASR_REPLACE_MAP: dict[str, str] = {
     "肉丝a": "RUSH A",
     "落壁": "rush B",
     "络币": "rush B",
+    "以口":"ECO",
 }
 
 # Keep hotwords intentionally small and clean. Too many bias terms will pull
